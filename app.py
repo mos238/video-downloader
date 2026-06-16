@@ -4,8 +4,6 @@ import yt_dlp
 import os
 import uuid
 import re
-import ssl
-import certifi
 import json
 import urllib.request
 from werkzeug.utils import secure_filename
@@ -14,17 +12,6 @@ import logging
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# SSL fix for yt-dlp
-os.environ['SSL_CERT_FILE'] = certifi.where()
-os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
-
-try:
-    _create_unverified_https_context = ssl._create_unverified_context
-except AttributeError:
-    pass
-else:
-    ssl._create_default_https_context = _create_unverified_https_context
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -35,10 +22,7 @@ COOKIE_FOLDER = 'cookies'
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 os.makedirs(COOKIE_FOLDER, exist_ok=True)
 
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
-
-# YouTube oEmbed API endpoint
-OEMBED_API = "https://www.youtube.com/oembed?url={}&format=json"
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
 
 def clean_youtube_url(url):
     """Clean YouTube URL by removing tracking parameters"""
@@ -62,72 +46,114 @@ def get_cookie_path():
         return cookie_file
     return None
 
-def get_video_info_oembed(url):
-    """Get video information using YouTube's oEmbed API (no SSL issues)"""
-    try:
-        # Get video ID from URL
-        video_id = None
-        match = re.search(r'v=([a-zA-Z0-9_-]+)', url)
-        if match:
-            video_id = match.group(1)
-        else:
-            match = re.search(r'youtu\.be/([a-zA-Z0-9_-]+)', url)
-            if match:
-                video_id = match.group(1)
-        
-        if not video_id:
-            return None
-        
-        # Use oEmbed API
-        api_url = OEMBED_API.format(url)
-        with urllib.request.urlopen(api_url, timeout=10) as response:
-            data = json.loads(response.read().decode())
-            
-            # Get additional info from yt-dlp (for formats)
-            formats = []
-            try:
-                ydl_opts = {
-                    'quiet': True,
-                    'no_warnings': True,
-                    'nocheckcertificate': True,
-                    'ignoreerrors': True,
-                    'cookiefile': get_cookie_path() if get_cookie_path() else None,
-                    'http_headers': {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    }
-                }
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                    if info:
-                        for f in info.get('formats', []):
-                            if f.get('height') and f.get('ext') in ['mp4', 'webm']:
-                                formats.append({
-                                    'quality': f"{f['height']}p",
-                                    'format_id': f['format_id'],
-                                    'ext': f['ext'],
-                                    'filesize': f.get('filesize', 0)
-                                })
-                        formats.sort(key=lambda x: int(x['quality'].replace('p', '')), reverse=True)
-            except Exception as e:
-                logger.warning(f"yt-dlp format fetch failed: {e}")
-                # Fallback formats
-                formats = [
-                    {'quality': '1080p', 'format_id': 'bestvideo+bestaudio', 'ext': 'mp4', 'filesize': 0},
-                    {'quality': '720p', 'format_id': 'bestvideo[height<=720]+bestaudio/best[height<=720]', 'ext': 'mp4', 'filesize': 0},
-                    {'quality': '480p', 'format_id': 'bestvideo[height<=480]+bestaudio/best[height<=480]', 'ext': 'mp4', 'filesize': 0},
-                ]
-            
-            return {
-                'success': True,
-                'title': data.get('title', 'Unknown'),
-                'thumbnail': data.get('thumbnail_url', ''),
-                'author_name': data.get('author_name', 'Unknown'),
-                'video_id': video_id,
-                'formats': formats
+def get_video_info_multimethod(url):
+    """
+    Get video information using multiple methods (from your proven script)
+    Starts with the method that works first!
+    """
+    url = clean_youtube_url(url)
+    logger.info(f"Fetching info for: {url}")
+    
+    # Method 1: Android SDK-less (proven to work without PO token)
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'ignoreerrors': 'only_download',
+        'retries': 2,
+        'extract_flat': False,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android_sdkless', 'web_safari'],
+                'skip': ['ios', 'web'],
             }
+        },
+        'js_runtimes': 'node',
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'referer': 'https://www.youtube.com/',
+        'http_headers': {
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+        },
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            
+            if info:
+                formats = []
+                for f in info.get('formats', []):
+                    if f.get('height') and f.get('ext') in ['mp4', 'webm']:
+                        formats.append({
+                            'quality': f"{f['height']}p",
+                            'format_id': f['format_id'],
+                            'ext': f['ext'],
+                            'filesize': f.get('filesize', 0),
+                            'width': f.get('width', 0)
+                        })
+                formats.sort(key=lambda x: int(x['quality'].replace('p', '')), reverse=True)
+                
+                return {
+                    'success': True,
+                    'title': info.get('title', 'Unknown'),
+                    'thumbnail': info.get('thumbnail', ''),
+                    'uploader': info.get('uploader', 'Unknown'),
+                    'duration': info.get('duration', 0),
+                    'formats': formats[:10],
+                    'description': info.get('description', '')[:500],
+                    'method': 'android_sdkless'
+                }
     except Exception as e:
-        logger.error(f"oEmbed API error: {e}")
-        return None
+        logger.warning(f"Method 1 failed: {e}")
+    
+    # Method 2: Mobile fallback
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'ignoreerrors': 'only_download',
+        'retries': 3,
+        'extract_flat': False,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android'],
+                'skip': ['dash', 'hls'],
+            }
+        },
+        'user_agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36',
+        'referer': 'https://m.youtube.com/',
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            
+            if info:
+                formats = []
+                for f in info.get('formats', []):
+                    if f.get('height') and f.get('ext') in ['mp4', 'webm']:
+                        formats.append({
+                            'quality': f"{f['height']}p",
+                            'format_id': f['format_id'],
+                            'ext': f['ext'],
+                            'filesize': f.get('filesize', 0),
+                            'width': f.get('width', 0)
+                        })
+                formats.sort(key=lambda x: int(x['quality'].replace('p', '')), reverse=True)
+                
+                return {
+                    'success': True,
+                    'title': info.get('title', 'Unknown'),
+                    'thumbnail': info.get('thumbnail', ''),
+                    'uploader': info.get('uploader', 'Unknown'),
+                    'duration': info.get('duration', 0),
+                    'formats': formats[:10],
+                    'description': info.get('description', '')[:500],
+                    'method': 'mobile'
+                }
+    except Exception as e:
+        logger.warning(f"Method 2 failed: {e}")
+    
+    return {'success': False, 'error': 'Could not fetch video info using any method'}
 
 @app.route('/')
 def index():
@@ -197,55 +223,12 @@ def get_video_info():
     if not url:
         return jsonify({'success': False, 'error': 'No URL provided'}), 400
     
-    url = clean_youtube_url(url)
-    logger.info(f"Fetching info for: {url}")
-    
-    # Try oEmbed API first (no SSL issues)
-    result = get_video_info_oembed(url)
-    if result and result.get('success'):
+    # Use multi-method approach
+    result = get_video_info_multimethod(url)
+    if result.get('success'):
         return jsonify(result)
     
-    # Fallback: try yt-dlp
-    try:
-        cookie_file = get_cookie_path()
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'nocheckcertificate': True,
-            'ignoreerrors': True,
-            'geo_bypass': True,
-            'cookiefile': cookie_file if cookie_file else None,
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            }
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            if info:
-                formats = []
-                for f in info.get('formats', []):
-                    if f.get('height') and f.get('ext') in ['mp4', 'webm']:
-                        formats.append({
-                            'quality': f"{f['height']}p",
-                            'format_id': f['format_id'],
-                            'ext': f['ext'],
-                            'filesize': f.get('filesize', 0)
-                        })
-                formats.sort(key=lambda x: int(x['quality'].replace('p', '')), reverse=True)
-                
-                return jsonify({
-                    'success': True,
-                    'title': info.get('title', 'Unknown'),
-                    'thumbnail': info.get('thumbnail', ''),
-                    'author_name': info.get('uploader', 'Unknown'),
-                    'video_id': info.get('id', ''),
-                    'formats': formats[:10]
-                })
-    except Exception as e:
-        logger.error(f"yt-dlp fallback error: {e}")
-    
-    return jsonify({'success': False, 'error': 'Could not fetch video info. Please try a different URL or use the Local Video Downloader.'}), 400
+    return jsonify({'success': False, 'error': result.get('error', 'Could not fetch video info')}), 400
 
 @app.route('/download', methods=['POST'])
 def download_video():
@@ -265,18 +248,38 @@ def download_video():
     filepath = os.path.join(DOWNLOAD_FOLDER, filename)
     
     try:
+        # Use the proven format from your script
+        if format_id == 'best':
+            format_spec = 'bestvideo+bestaudio/best'
+        else:
+            format_spec = format_id
+        
         ydl_opts = {
-            'format': format_id,
+            'format': format_spec,
             'outtmpl': filepath,
-            'quiet': True,
+            'quiet': False,
             'no_warnings': True,
-            'nocheckcertificate': True,
-            'ignoreerrors': True,
-            'geo_bypass': True,
+            'ignoreerrors': 'only_download',
+            'retries': 2,
+            'merge_output_format': 'mp4',
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android_sdkless', 'web_safari'],
+                    'skip': ['ios', 'web'],
+                }
+            },
+            'js_runtimes': 'node',
             'cookiefile': cookie_file if cookie_file else None,
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'referer': 'https://www.youtube.com/',
             'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            }
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+            },
+            'sleep_interval': 0,
+            'max_sleep_interval': 0,
+            'throttled_rate': 0,
+            'progress_hooks': [lambda d: logger.info(f"Download progress: {d.get('_percent_str', '')}")],
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -290,7 +293,7 @@ def download_video():
                 mimetype='video/mp4'
             )
         else:
-            return jsonify({'success': False, 'error': 'Download failed'}), 500
+            return jsonify({'success': False, 'error': 'Download failed - file not created'}), 500
             
     except Exception as e:
         error_msg = str(e)
