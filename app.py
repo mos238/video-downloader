@@ -111,7 +111,7 @@ def get_video_info():
     cookie_file = get_cookie_path()
     
     try:
-        # First get the video info
+        # Get video info with formats using yt-dlp
         cmd = [
             'yt-dlp',
             '--no-warnings',
@@ -134,69 +134,36 @@ def get_video_info():
         
         info = json.loads(result.stdout)
         
-        # Get formats separately with --list-formats
-        format_cmd = [
-            'yt-dlp',
-            '--no-warnings',
-            '--quiet',
-            '--list-formats',
-            '--no-check-certificate',
-            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        ]
-        
-        if cookie_file and os.path.exists(cookie_file):
-            format_cmd.extend(['--cookies', cookie_file])
-        
-        format_cmd.append(url)
-        
-        format_result = subprocess.run(format_cmd, capture_output=True, text=True, timeout=30)
-        
+        # Get all formats from the JSON
         formats = []
-        if format_result.returncode == 0:
-            # Parse the format list output
-            for line in format_result.stdout.split('\n'):
-                # Look for lines with format IDs and resolutions
-                parts = line.split()
-                if len(parts) >= 3:
-                    # Check if it's a video format (has resolution like 1920x1080)
-                    resolution_match = re.search(r'(\d{3,4})x(\d{3,4})', line)
-                    if resolution_match:
-                        height = resolution_match.group(2)
-                        # Extract format ID (first column)
-                        format_id = parts[0]
-                        ext = 'mp4'  # default
-                        if 'mp4' in line.lower():
-                            ext = 'mp4'
-                        elif 'webm' in line.lower():
-                            ext = 'webm'
-                        formats.append({
-                            'quality': f"{height}p",
-                            'format_id': format_id,
-                            'ext': ext,
-                            'filesize': 0
-                        })
+        seen_qualities = set()
         
-        # If no formats from list-formats, try to get from the JSON
-        if not formats:
-            for f in info.get('formats', []):
-                if f.get('height') and f.get('ext') in ['mp4', 'webm']:
+        for f in info.get('formats', []):
+            # Get video format with resolution
+            height = f.get('height')
+            if height and f.get('vcodec') != 'none':
+                quality = f"{height}p"
+                # Avoid duplicates
+                if quality not in seen_qualities:
+                    seen_qualities.add(quality)
                     formats.append({
-                        'quality': f"{f['height']}p",
+                        'quality': quality,
                         'format_id': f['format_id'],
-                        'ext': f['ext'],
-                        'filesize': f.get('filesize', 0)
+                        'ext': f.get('ext', 'mp4'),
+                        'filesize': f.get('filesize', 0),
+                        'has_audio': f.get('acodec') != 'none'
                     })
         
-        # Sort formats by height (highest first)
-        formats.sort(key=lambda x: int(x['quality'].replace('p', '')) if x['quality'] != 'audio' else 0, reverse=True)
+        # Sort by quality (highest first)
+        formats.sort(key=lambda x: int(x['quality'].replace('p', '')), reverse=True)
         
-        # If still no formats, add common ones as fallback
+        # If no formats found, add some common ones
         if not formats:
             formats = [
-                {'quality': '1080p', 'format_id': '137', 'ext': 'mp4', 'filesize': 0},
-                {'quality': '720p', 'format_id': '136', 'ext': 'mp4', 'filesize': 0},
-                {'quality': '480p', 'format_id': '135', 'ext': 'mp4', 'filesize': 0},
-                {'quality': '360p', 'format_id': '134', 'ext': 'mp4', 'filesize': 0},
+                {'quality': '1080p', 'format_id': '137+140', 'ext': 'mp4', 'filesize': 0, 'has_audio': True},
+                {'quality': '720p', 'format_id': '136+140', 'ext': 'mp4', 'filesize': 0, 'has_audio': True},
+                {'quality': '480p', 'format_id': '135+140', 'ext': 'mp4', 'filesize': 0, 'has_audio': True},
+                {'quality': '360p', 'format_id': '134+140', 'ext': 'mp4', 'filesize': 0, 'has_audio': True},
             ]
         
         return jsonify({
@@ -248,7 +215,7 @@ def download_video():
         
         cmd.append(url)
         
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
         
         if result.returncode != 0:
             logger.error(f"Download error: {result.stderr}")
