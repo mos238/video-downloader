@@ -111,7 +111,7 @@ def get_video_info():
     cookie_file = get_cookie_path()
     
     try:
-        # Get video info with formats using yt-dlp
+        # Use the exact same command that works in terminal
         cmd = [
             'yt-dlp',
             '--no-warnings',
@@ -126,6 +126,7 @@ def get_video_info():
         
         cmd.append(url)
         
+        logger.info(f"Running command: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         
         if result.returncode != 0:
@@ -134,21 +135,24 @@ def get_video_info():
         
         info = json.loads(result.stdout)
         
-        # Get all formats from the JSON
+        # Get formats from the JSON
         formats = []
         seen_qualities = set()
         
         for f in info.get('formats', []):
-            # Get video format with resolution
             height = f.get('height')
             if height and f.get('vcodec') != 'none':
                 quality = f"{height}p"
-                # Avoid duplicates
                 if quality not in seen_qualities:
                     seen_qualities.add(quality)
+                    # Get combined format for best quality
+                    format_id = f['format_id']
+                    # Add audio if available
+                    if f.get('acodec') != 'none':
+                        format_id = f"{format_id}+bestaudio"
                     formats.append({
                         'quality': quality,
-                        'format_id': f['format_id'],
+                        'format_id': format_id,
                         'ext': f.get('ext', 'mp4'),
                         'filesize': f.get('filesize', 0),
                         'has_audio': f.get('acodec') != 'none'
@@ -157,7 +161,7 @@ def get_video_info():
         # Sort by quality (highest first)
         formats.sort(key=lambda x: int(x['quality'].replace('p', '')), reverse=True)
         
-        # If no formats found, add some common ones
+        # If no formats found, add common ones as fallback
         if not formats:
             formats = [
                 {'quality': '1080p', 'format_id': '137+140', 'ext': 'mp4', 'filesize': 0, 'has_audio': True},
@@ -229,7 +233,7 @@ def download_video():
                 mimetype='video/mp4'
             )
         else:
-            return jsonify({'success': False, 'error': 'Download failed - file not created'}), 500
+            return jsonify({'success': False, 'error': 'Download failed'}), 500
             
     except subprocess.TimeoutExpired:
         return jsonify({'success': False, 'error': 'Download timed out'}), 500
