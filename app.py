@@ -13,16 +13,21 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# SSL certificate fix
+# Fix SSL certificate issues
 os.environ['SSL_CERT_FILE'] = certifi.where()
 os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
 
+# Completely disable SSL verification for all requests
 try:
     _create_unverified_https_context = ssl._create_unverified_context
 except AttributeError:
     pass
 else:
     ssl._create_default_https_context = _create_unverified_https_context
+
+# Also disable SSL for urllib3
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -36,23 +41,18 @@ os.makedirs(COOKIE_FOLDER, exist_ok=True)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
 def clean_youtube_url(url):
-    """Clean YouTube URL by removing tracking parameters"""
     url = url.strip()
-    
     if 'youtu.be' in url:
         match = re.search(r'youtu\.be/([a-zA-Z0-9_-]+)', url)
         if match:
             video_id = match.group(1)
             return f'https://www.youtube.com/watch?v={video_id}'
-    
     if 'youtube.com' in url:
         url = re.sub(r'[?&](si|feature|list|index|pp|is|emb|utm|ab_channel)=[^&]*', '', url)
         url = re.sub(r'[?&]$', '', url)
-    
     return url
 
 def get_cookie_path():
-    """Get the path to the current cookie file"""
     cookie_file = session.get('cookie_file', '')
     if cookie_file and os.path.exists(cookie_file):
         return cookie_file
@@ -72,22 +72,18 @@ def upload_cookie():
         if file.filename == '':
             return jsonify({'success': False, 'error': 'No file selected'}), 400
         
-        # Save the cookie file
         filename = secure_filename(f"cookies_{uuid.uuid4().hex[:8]}.txt")
         filepath = os.path.join(COOKIE_FOLDER, filename)
         file.save(filepath)
         
-        # Verify the file is valid
         with open(filepath, 'r') as f:
             content = f.read()
             if len(content) < 50:
                 os.remove(filepath)
                 return jsonify({'success': False, 'error': 'Cookie file appears empty or invalid'}), 400
         
-        # Store in session
         session['cookie_file'] = filepath
-        
-        logger.info(f"Cookie file uploaded: {filepath}, size: {len(content)} bytes")
+        logger.info(f"Cookie file uploaded: {filepath}")
         
         return jsonify({
             'success': True,
@@ -95,7 +91,6 @@ def upload_cookie():
             'filename': filename,
             'size': len(content)
         })
-        
     except Exception as e:
         logger.error(f"Upload error: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -138,20 +133,27 @@ def get_video_info():
     logger.info(f"Cookie file: {cookie_file}")
     
     try:
+        # Use a different approach - fetch with direct HTTP and bypass SSL
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
             'extract_flat': False,
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'nocheckcertificate': True,
             'ignoreerrors': True,
             'geo_bypass': True,
             'cookiefile': cookie_file if cookie_file else None,
+            # Add these headers to mimic a browser
             'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-us,en;q=0.5',
-            }
+                'Sec-Fetch-Mode': 'navigate',
+            },
+            # Add these to help with SSL issues
+            'source_address': '0.0.0.0',
+            'socket_timeout': 30,
+            'retries': 5,
+            'fragment_retries': 5,
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -184,16 +186,17 @@ def get_video_info():
         error_msg = str(e)
         logger.error(f"Error: {error_msg}")
         
-        if 'certificate' in error_msg.lower() or 'SSL' in error_msg:
-            error_msg = 'SSL certificate issue. Please try a different cookie file or use the Local Video Downloader.'
+        # Provide more helpful error messages
+        if 'SSL' in error_msg or 'certificate' in error_msg:
+            error_msg = 'SSL certificate issue. The cookie file may not be valid. Please try: 1) Export fresh cookies 2) Use the Local Video Downloader instead.'
         elif 'Video unavailable' in error_msg:
             error_msg = 'Video is unavailable or private'
         elif 'Sign in' in error_msg:
-            error_msg = 'Video requires login or is age-restricted. Try a different cookie file.'
+            error_msg = 'Video requires login or is age-restricted. Please try a different cookie file.'
         elif 'rate limit' in error_msg.lower():
             error_msg = 'Rate limited. Please try again later'
         else:
-            error_msg = 'Unable to fetch video. Please check the URL and try again.'
+            error_msg = f'Unable to fetch video. Error: {error_msg[:100]}'
         
         return jsonify({'success': False, 'error': error_msg}), 400
 
@@ -220,16 +223,18 @@ def download_video():
             'outtmpl': filepath,
             'quiet': True,
             'no_warnings': True,
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'nocheckcertificate': True,
             'ignoreerrors': True,
             'geo_bypass': True,
             'cookiefile': cookie_file if cookie_file else None,
             'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-us,en;q=0.5',
-            }
+            },
+            'source_address': '0.0.0.0',
+            'socket_timeout': 30,
+            'retries': 5,
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
