@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Downloader</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            position: relative;
+        }
+        .back-link {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            display: inline-block;
+            padding: 6px 12px;
+            background: rgba(102,126,234,0.1);
+            color: #667eea;
+            text-decoration: none;
+            border-radius: 6px;
+            font-size: 12px;
+            transition: all 0.3s;
+        }
+        .back-link:hover { background: #667eea; color: white; transform: translateX(-3px); }
+        h1 { text-align: center; color: #333; margin-bottom: 10px; margin-top: 20px; }
+        .subtitle { text-align: center; color: #666; margin-bottom: 30px; }
+        
+        .cookie-section {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 20px;
+            border: 1px solid #e0e0e0;
+        }
+        .cookie-status {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .cookie-upload {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .cookie-upload input[type="file"] { display: none; }
+        .cookie-upload label {
+            padding: 8px 16px;
+            background: #667eea;
+            color: white;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.3s;
+        }
+        .cookie-upload label:hover { background: #5a67d8; transform: translateY(-2px); }
+        .btn-small {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-danger:hover { background: #c82333; }
+        .btn-success { background: #48bb78; color: white; }
+        .btn-success:hover { background: #38a169; }
+        .cookie-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .cookie-badge.active { background: #d4edda; color: #155724; }
+        .cookie-badge.inactive { background: #f8d7da; color: #721c24; }
+        
+        .url-input {
+            width: 100%;
+            padding: 12px;
+            font-size: 14px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            margin-bottom: 12px;
+        }
+        .url-input:focus { outline: none; border-color: #667eea; }
+        .fetch-btn {
+            width: 100%;
+            padding: 15px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .fetch-btn:hover { background: #5a67d8; }
+        .loading { text-align: center; padding: 20px; display: none; }
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .video-info {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            display: none;
+        }
+        .video-info img { max-width: 100%; border-radius: 10px; }
+        .download-btn {
+            width: 100%;
+            padding: 12px;
+            background: #48bb78;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            margin-top: 10px;
+            cursor: pointer;
+        }
+        .error {
+            background: #fed7d7;
+            color: #9b2c2c;
+            padding: 12px;
+            border-radius: 8px;
+            margin-top: 15px;
+            display: none;
+        }
+        .footer-note {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #e0e0e0;
+            font-size: 12px;
+            color: #888;
+        }
+        .quality-select { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ddd; border-radius: 6px; }
+        .info-text { font-size: 12px; color: #888; margin-top: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="https://mos238.github.io/myWebSite/" class="back-link">← Back to Portfolio</a>
+        <h1>🎥 Video Downloader</h1>
+        <p class="subtitle">Download YouTube videos in high quality</p>
+        
+        <!-- Cookie Section -->
+        <div class="cookie-section">
+            <div class="cookie-status">
+                <div>
+                    <span id="cookieBadge" class="cookie-badge inactive">No Cookie</span>
+                    <span id="cookieInfo" style="font-size: 12px; color: #666; margin-left: 10px;"></span>
+                </div>
+                <div class="cookie-upload">
+                    <label for="cookieFile">📤 Upload cookies.txt</label>
+                    <input type="file" id="cookieFile" accept=".txt">
+                    <button id="clearCookieBtn" class="btn-small btn-danger" style="display: none;">🗑️ Clear</button>
+                </div>
+            </div>
+            <div class="info-text">💡 Upload cookies.txt from your browser to fix SSL issues and access private videos</div>
+        </div>
+        
+        <input type="text" id="youtubeUrl" class="url-input" placeholder="https://www.youtube.com/watch?v=..." />
+        <button onclick="fetchVideoInfo()" class="fetch-btn">Get Video Info</button>
+        
+        <div class="loading" id="loading"><div class="spinner"></div><p>Fetching video information...</p></div>
+        <div class="error" id="error"></div>
+        <div class="video-info" id="videoInfo">
+            <img id="thumbnail" alt="Thumbnail">
+            <h3 id="title"></h3>
+            <select id="formatSelect" class="quality-select"></select>
+            <button class="download-btn" onclick="downloadVideo()">Download Video</button>
+        </div>
+        
+        <div class="footer-note">
+            💡 Free tool by Mohammed Sayed | <a href="https://mos238.github.io/myWebSite/" style="color: #667eea;">Visit Portfolio</a>
+        </div>
+    </div>
+    
+    <script>
+        let currentVideoUrl = '';
+        let hasCookie = false;
+        
+        // Cookie functions
+        document.getElementById('cookieFile').addEventListener('change', async function() {
+            const file = this.files[0];
+            if (!file) return;
+            
+            const formData = new FormData();
+            formData.append('cookie_file', file);
+            
+            try {
+                const response = await fetch('/upload-cookie', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                if (data.success) {
+                    hasCookie = true;
+                    updateCookieStatus(true, `File: ${file.name}`);
+                    showStatus('Cookie uploaded successfully!', 'success');
+                } else {
+                    showStatus('Error: ' + data.error, 'error');
+                }
+            } catch (error) {
+                showStatus('Error uploading cookie', 'error');
+            }
+        });
+        
+        document.getElementById('clearCookieBtn').addEventListener('click', async function() {
+            try {
+                const response = await fetch('/clear-cookie', {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                if (data.success) {
+                    hasCookie = false;
+                    updateCookieStatus(false);
+                    showStatus('Cookie cleared', 'info');
+                }
+            } catch (error) {
+                showStatus('Error clearing cookie', 'error');
+            }
+        });
+        
+        async function checkCookieStatus() {
+            try {
+                const response = await fetch('/get-cookie-status');
+                const data = await response.json();
+                if (data.has_cookie) {
+                    hasCookie = true;
+                    updateCookieStatus(true, `${data.size_mb}`);
+                } else {
+                    hasCookie = false;
+                    updateCookieStatus(false);
+                }
+            } catch (error) {
+                console.error('Error checking cookie status:', error);
+            }
+        }
+        
+        function updateCookieStatus(active, info) {
+            const badge = document.getElementById('cookieBadge');
+            const infoText = document.getElementById('cookieInfo');
+            const clearBtn = document.getElementById('clearCookieBtn');
+            
+            if (active) {
+                badge.textContent = '✅ Cookie Active';
+                badge.className = 'cookie-badge active';
+                infoText.textContent = info || '';
+                clearBtn.style.display = 'inline-block';
+            } else {
+                badge.textContent = '❌ No Cookie';
+                badge.className = 'cookie-badge inactive';
+                infoText.textContent = 'Upload cookies.txt to fix SSL issues';
+                clearBtn.style.display = 'none';
+            }
+        }
+        
+        // Main video functions
+        async function fetchVideoInfo() {
+            const url = document.getElementById('youtubeUrl').value;
+            if (!url) { showError('Please enter a YouTube URL'); return; }
+            
+            showLoading(true);
+            hideError();
+            hideVideoInfo();
+            
+            try {
+                const response = await fetch('/get-info', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({url: url})
+                });
+                const data = await response.json();
+                if (data.success) {
+                    currentVideoUrl = url;
+                    displayVideoInfo(data);
+                } else {
+                    showError(data.error || 'Failed to fetch video info');
+                    if (data.error && data.error.includes('SSL')) {
+                        showError('SSL Error: Please upload a cookies.txt file first.');
+                    }
+                }
+            } catch (error) {
+                showError('Network error. Please try again.');
+            } finally {
+                showLoading(false);
+            }
+        }
+        
+        function displayVideoInfo(data) {
+            document.getElementById('thumbnail').src = data.thumbnail;
+            document.getElementById('title').textContent = data.title;
+            const formatSelect = document.getElementById('formatSelect');
+            formatSelect.innerHTML = '';
+            data.formats.forEach(f => {
+                const option = document.createElement('option');
+                option.value = f.format_id;
+                const size = f.filesize ? ` (${(f.filesize / 1024 / 1024).toFixed(2)} MB)` : '';
+                option.textContent = `${f.quality} - ${f.ext}${size}`;
+                formatSelect.appendChild(option);
+            });
+            document.getElementById('videoInfo').style.display = 'block';
+        }
+        
+        async function downloadVideo() {
+            const url = currentVideoUrl;
+            const formatId = document.getElementById('formatSelect').value;
+            try {
+                const response = await fetch('/download', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({url: url, format_id: formatId})
+                });
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const downloadUrl = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = downloadUrl;
+                    a.download = 'video.mp4';
+                    a.click();
+                    window.URL.revokeObjectURL(downloadUrl);
+                } else {
+                    const data = await response.json();
+                    showError(data.error || 'Download failed. Please try again.');
+                }
+            } catch (error) {
+                showError('Download failed. Please try again.');
+            }
+        }
+        
+        function showLoading(show) {
+            document.getElementById('loading').style.display = show ? 'block' : 'none';
+            document.querySelector('.fetch-btn').disabled = show;
+        }
+        
+        function showError(message) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+            setTimeout(() => errorDiv.style.display = 'none', 8000);
+        }
+        
+        function hideError() { document.getElementById('error').style.display = 'none'; }
+        function hideVideoInfo() { document.getElementById('videoInfo').style.display = 'none'; }
+        function showStatus(message, type) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = message;
+            errorDiv.className = 'error';
+            errorDiv.style.display = 'block';
+            setTimeout(() => errorDiv.style.display = 'none', 5000);
+        }
+        
+        // Check cookie status on load
+        checkCookieStatus();
+    </script>
+</body>
+</html>
