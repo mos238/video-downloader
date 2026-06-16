@@ -7,6 +7,11 @@ import re
 import ssl
 import certifi
 from werkzeug.utils import secure_filename
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # SSL certificate fix
 os.environ['SSL_CERT_FILE'] = certifi.where()
@@ -28,7 +33,7 @@ COOKIE_FOLDER = 'cookies'
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 os.makedirs(COOKIE_FOLDER, exist_ok=True)
 
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max for cookie file
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
 def clean_youtube_url(url):
     """Clean YouTube URL by removing tracking parameters"""
@@ -59,7 +64,6 @@ def index():
 
 @app.route('/upload-cookie', methods=['POST'])
 def upload_cookie():
-    """Upload a cookies.txt file"""
     try:
         if 'cookie_file' not in request.files:
             return jsonify({'success': False, 'error': 'No file uploaded'}), 400
@@ -68,34 +72,36 @@ def upload_cookie():
         if file.filename == '':
             return jsonify({'success': False, 'error': 'No file selected'}), 400
         
-        if not file.filename.endswith('.txt'):
-            return jsonify({'success': False, 'error': 'File must be .txt format'}), 400
-        
         # Save the cookie file
         filename = secure_filename(f"cookies_{uuid.uuid4().hex[:8]}.txt")
         filepath = os.path.join(COOKIE_FOLDER, filename)
         file.save(filepath)
         
+        # Verify the file is valid
+        with open(filepath, 'r') as f:
+            content = f.read()
+            if len(content) < 50:
+                os.remove(filepath)
+                return jsonify({'success': False, 'error': 'Cookie file appears empty or invalid'}), 400
+        
         # Store in session
         session['cookie_file'] = filepath
         
-        # Read first few lines to verify
-        with open(filepath, 'r') as f:
-            first_lines = f.readlines()[:5]
+        logger.info(f"Cookie file uploaded: {filepath}, size: {len(content)} bytes")
         
         return jsonify({
             'success': True,
             'message': 'Cookie file uploaded successfully!',
             'filename': filename,
-            'preview': first_lines
+            'size': len(content)
         })
         
     except Exception as e:
+        logger.error(f"Upload error: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/clear-cookie', methods=['POST'])
 def clear_cookie():
-    """Clear the current cookie file"""
     try:
         cookie_file = session.get('cookie_file')
         if cookie_file and os.path.exists(cookie_file):
@@ -107,7 +113,6 @@ def clear_cookie():
 
 @app.route('/get-cookie-status', methods=['GET'])
 def get_cookie_status():
-    """Get the status of the current cookie file"""
     cookie_file = session.get('cookie_file')
     if cookie_file and os.path.exists(cookie_file):
         size = os.path.getsize(cookie_file)
@@ -127,11 +132,10 @@ def get_video_info():
         return jsonify({'success': False, 'error': 'No URL provided'}), 400
     
     url = clean_youtube_url(url)
-    print(f"🎬 Fetching info for: {url}")
+    logger.info(f"Fetching info for: {url}")
     
-    # Get cookie file from session
     cookie_file = get_cookie_path()
-    print(f"🍪 Using cookie: {cookie_file}")
+    logger.info(f"Cookie file: {cookie_file}")
     
     try:
         ydl_opts = {
@@ -178,14 +182,14 @@ def get_video_info():
             
     except Exception as e:
         error_msg = str(e)
-        print(f"❌ Error: {error_msg}")
+        logger.error(f"Error: {error_msg}")
         
         if 'certificate' in error_msg.lower() or 'SSL' in error_msg:
-            error_msg = 'SSL certificate issue. Please upload a cookies.txt file or use the Local Video Downloader.'
+            error_msg = 'SSL certificate issue. Please try a different cookie file or use the Local Video Downloader.'
         elif 'Video unavailable' in error_msg:
             error_msg = 'Video is unavailable or private'
         elif 'Sign in' in error_msg:
-            error_msg = 'Video requires login or is age-restricted'
+            error_msg = 'Video requires login or is age-restricted. Try a different cookie file.'
         elif 'rate limit' in error_msg.lower():
             error_msg = 'Rate limited. Please try again later'
         else:
@@ -203,10 +207,9 @@ def download_video():
         return jsonify({'success': False, 'error': 'No URL provided'}), 400
     
     url = clean_youtube_url(url)
-    print(f"⬇️ Downloading: {url}")
+    logger.info(f"Downloading: {url}")
     
     cookie_file = get_cookie_path()
-    print(f"🍪 Using cookie: {cookie_file}")
     
     filename = f"{uuid.uuid4().hex}.mp4"
     filepath = os.path.join(DOWNLOAD_FOLDER, filename)
@@ -244,7 +247,7 @@ def download_video():
             
     except Exception as e:
         error_msg = str(e)
-        print(f"❌ Download error: {error_msg}")
+        logger.error(f"Download error: {error_msg}")
         return jsonify({'success': False, 'error': error_msg}), 500
     finally:
         if os.path.exists(filepath):
