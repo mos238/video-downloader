@@ -5,22 +5,7 @@ import os
 import uuid
 import re
 import json
-import ssl
-import certifi
-from werkzeug.utils import secure_filename
 import logging
-
-# Fix SSL certificate issues
-os.environ['SSL_CERT_FILE'] = certifi.where()
-os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
-
-# Completely disable SSL verification
-try:
-    _create_unverified_https_context = ssl._create_unverified_context
-except AttributeError:
-    pass
-else:
-    ssl._create_default_https_context = _create_unverified_https_context
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -65,6 +50,7 @@ def upload_cookie():
         if file.filename == '':
             return jsonify({'success': False, 'error': 'No file selected'}), 400
         
+        from werkzeug.utils import secure_filename
         filename = secure_filename(f"cookies_{uuid.uuid4().hex[:8]}.txt")
         filepath = os.path.join(COOKIE_FOLDER, filename)
         file.save(filepath)
@@ -126,28 +112,15 @@ def get_video_info():
     logger.info(f"Cookie file: {cookie_file}")
     
     try:
+        # Simple, minimal configuration
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
-            'ignoreerrors': 'only_download',
+            'ignoreerrors': True,
             'extract_flat': False,
             'nocheckcertificate': True,
             'cookiefile': cookie_file if cookie_file else None,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android_sdkless', 'web_safari'],
-                    'skip': ['ios', 'web'],
-                }
-            },
-            'js_runtimes': 'node',
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'referer': 'https://www.youtube.com/',
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-                'Sec-Fetch-Mode': 'navigate',
-            }
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -180,17 +153,6 @@ def get_video_info():
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Error: {error_msg}")
-        
-        # Provide helpful error messages
-        if 'SSL' in error_msg or 'certificate' in error_msg:
-            error_msg = 'SSL certificate issue. Please upload a valid cookies.txt file from your browser.'
-        elif 'Video unavailable' in error_msg:
-            error_msg = 'Video is unavailable or private'
-        elif 'Sign in' in error_msg:
-            error_msg = 'Video requires login. Please upload a cookies.txt file with your YouTube session.'
-        elif 'rate limit' in error_msg.lower():
-            error_msg = 'Rate limited. Please try again later'
-        
         return jsonify({'success': False, 'error': error_msg}), 400
 
 @app.route('/download', methods=['POST'])
@@ -206,7 +168,6 @@ def download_video():
     logger.info(f"Downloading: {url}")
     
     cookie_file = get_cookie_path()
-    logger.info(f"Cookie file: {cookie_file}")
     
     filename = f"{uuid.uuid4().hex}.mp4"
     filepath = os.path.join(DOWNLOAD_FOLDER, filename)
@@ -217,23 +178,10 @@ def download_video():
             'outtmpl': filepath,
             'quiet': True,
             'no_warnings': True,
-            'ignoreerrors': 'only_download',
+            'ignoreerrors': True,
             'nocheckcertificate': True,
             'cookiefile': cookie_file if cookie_file else None,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android_sdkless', 'web_safari'],
-                    'skip': ['ios', 'web'],
-                }
-            },
-            'js_runtimes': 'node',
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'referer': 'https://www.youtube.com/',
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-            }
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
