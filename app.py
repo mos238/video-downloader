@@ -6,6 +6,8 @@ import uuid
 import re
 import ssl
 import certifi
+import json
+import urllib.request
 from werkzeug.utils import secure_filename
 import logging
 
@@ -13,21 +15,16 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Fix SSL certificate issues
+# SSL fix for yt-dlp
 os.environ['SSL_CERT_FILE'] = certifi.where()
 os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
 
-# Completely disable SSL verification for all requests
 try:
     _create_unverified_https_context = ssl._create_unverified_context
 except AttributeError:
     pass
 else:
     ssl._create_default_https_context = _create_unverified_https_context
-
-# Also disable SSL for urllib3
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -40,16 +37,23 @@ os.makedirs(COOKIE_FOLDER, exist_ok=True)
 
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
+# YouTube oEmbed API endpoint
+OEMBED_API = "https://www.youtube.com/oembed?url={}&format=json"
+
 def clean_youtube_url(url):
+    """Clean YouTube URL by removing tracking parameters"""
     url = url.strip()
+    
     if 'youtu.be' in url:
         match = re.search(r'youtu\.be/([a-zA-Z0-9_-]+)', url)
         if match:
             video_id = match.group(1)
             return f'https://www.youtube.com/watch?v={video_id}'
+    
     if 'youtube.com' in url:
         url = re.sub(r'[?&](si|feature|list|index|pp|is|emb|utm|ab_channel)=[^&]*', '', url)
         url = re.sub(r'[?&]$', '', url)
+    
     return url
 
 def get_cookie_path():
@@ -57,6 +61,73 @@ def get_cookie_path():
     if cookie_file and os.path.exists(cookie_file):
         return cookie_file
     return None
+
+def get_video_info_oembed(url):
+    """Get video information using YouTube's oEmbed API (no SSL issues)"""
+    try:
+        # Get video ID from URL
+        video_id = None
+        match = re.search(r'v=([a-zA-Z0-9_-]+)', url)
+        if match:
+            video_id = match.group(1)
+        else:
+            match = re.search(r'youtu\.be/([a-zA-Z0-9_-]+)', url)
+            if match:
+                video_id = match.group(1)
+        
+        if not video_id:
+            return None
+        
+        # Use oEmbed API
+        api_url = OEMBED_API.format(url)
+        with urllib.request.urlopen(api_url, timeout=10) as response:
+            data = json.loads(response.read().decode())
+            
+            # Get additional info from yt-dlp (for formats)
+            formats = []
+            try:
+                ydl_opts = {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'nocheckcertificate': True,
+                    'ignoreerrors': True,
+                    'cookiefile': get_cookie_path() if get_cookie_path() else None,
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    }
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    if info:
+                        for f in info.get('formats', []):
+                            if f.get('height') and f.get('ext') in ['mp4', 'webm']:
+                                formats.append({
+                                    'quality': f"{f['height']}p",
+                                    'format_id': f['format_id'],
+                                    'ext': f['ext'],
+                                    'filesize': f.get('filesize', 0)
+                                })
+                        formats.sort(key=lambda x: int(x['quality'].replace('p', '')), reverse=True)
+            except Exception as e:
+                logger.warning(f"yt-dlp format fetch failed: {e}")
+                # Fallback formats
+                formats = [
+                    {'quality': '1080p', 'format_id': 'bestvideo+bestaudio', 'ext': 'mp4', 'filesize': 0},
+                    {'quality': '720p', 'format_id': 'bestvideo[height<=720]+bestaudio/best[height<=720]', 'ext': 'mp4', 'filesize': 0},
+                    {'quality': '480p', 'format_id': 'bestvideo[height<=480]+bestaudio/best[height<=480]', 'ext': 'mp4', 'filesize': 0},
+                ]
+            
+            return {
+                'success': True,
+                'title': data.get('title', 'Unknown'),
+                'thumbnail': data.get('thumbnail_url', ''),
+                'author_name': data.get('author_name', 'Unknown'),
+                'video_id': video_id,
+                'formats': formats
+            }
+    except Exception as e:
+        logger.error(f"oEmbed API error: {e}")
+        return None
 
 @app.route('/')
 def index():
@@ -80,14 +151,14 @@ def upload_cookie():
             content = f.read()
             if len(content) < 50:
                 os.remove(filepath)
-                return jsonify({'success': False, 'error': 'Cookie file appears empty or invalid'}), 400
+                return jsonify({'success': False, 'error': 'Cookie file appears empty'}), 400
         
         session['cookie_file'] = filepath
         logger.info(f"Cookie file uploaded: {filepath}")
         
         return jsonify({
             'success': True,
-            'message': 'Cookie file uploaded successfully!',
+            'message': 'Cookie uploaded successfully!',
             'filename': filename,
             'size': len(content)
         })
@@ -102,7 +173,7 @@ def clear_cookie():
         if cookie_file and os.path.exists(cookie_file):
             os.remove(cookie_file)
         session.pop('cookie_file', None)
-        return jsonify({'success': True, 'message': 'Cookie file cleared'})
+        return jsonify({'success': True, 'message': 'Cookie cleared'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -129,76 +200,52 @@ def get_video_info():
     url = clean_youtube_url(url)
     logger.info(f"Fetching info for: {url}")
     
-    cookie_file = get_cookie_path()
-    logger.info(f"Cookie file: {cookie_file}")
+    # Try oEmbed API first (no SSL issues)
+    result = get_video_info_oembed(url)
+    if result and result.get('success'):
+        return jsonify(result)
     
+    # Fallback: try yt-dlp
     try:
-        # Use a different approach - fetch with direct HTTP and bypass SSL
+        cookie_file = get_cookie_path()
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
-            'extract_flat': False,
             'nocheckcertificate': True,
             'ignoreerrors': True,
             'geo_bypass': True,
             'cookiefile': cookie_file if cookie_file else None,
-            # Add these headers to mimic a browser
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-                'Sec-Fetch-Mode': 'navigate',
-            },
-            # Add these to help with SSL issues
-            'source_address': '0.0.0.0',
-            'socket_timeout': 30,
-            'retries': 5,
-            'fragment_retries': 5,
+            }
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            
-            if not info:
-                return jsonify({'success': False, 'error': 'Could not fetch video info'}), 400
-            
-            formats = []
-            for f in info.get('formats', []):
-                if f.get('height') and f.get('ext') in ['mp4', 'webm']:
-                    formats.append({
-                        'quality': f"{f['height']}p",
-                        'format_id': f['format_id'],
-                        'ext': f['ext'],
-                        'filesize': f.get('filesize', 0)
-                    })
-            
-            formats.sort(key=lambda x: int(x['quality'].replace('p', '')), reverse=True)
-            
-            return jsonify({
-                'success': True,
-                'title': info.get('title', 'Unknown'),
-                'thumbnail': info.get('thumbnail', ''),
-                'duration': info.get('duration', 0),
-                'formats': formats[:10]
-            })
-            
+            if info:
+                formats = []
+                for f in info.get('formats', []):
+                    if f.get('height') and f.get('ext') in ['mp4', 'webm']:
+                        formats.append({
+                            'quality': f"{f['height']}p",
+                            'format_id': f['format_id'],
+                            'ext': f['ext'],
+                            'filesize': f.get('filesize', 0)
+                        })
+                formats.sort(key=lambda x: int(x['quality'].replace('p', '')), reverse=True)
+                
+                return jsonify({
+                    'success': True,
+                    'title': info.get('title', 'Unknown'),
+                    'thumbnail': info.get('thumbnail', ''),
+                    'author_name': info.get('uploader', 'Unknown'),
+                    'video_id': info.get('id', ''),
+                    'formats': formats[:10]
+                })
     except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Error: {error_msg}")
-        
-        # Provide more helpful error messages
-        if 'SSL' in error_msg or 'certificate' in error_msg:
-            error_msg = 'SSL certificate issue. The cookie file may not be valid. Please try: 1) Export fresh cookies 2) Use the Local Video Downloader instead.'
-        elif 'Video unavailable' in error_msg:
-            error_msg = 'Video is unavailable or private'
-        elif 'Sign in' in error_msg:
-            error_msg = 'Video requires login or is age-restricted. Please try a different cookie file.'
-        elif 'rate limit' in error_msg.lower():
-            error_msg = 'Rate limited. Please try again later'
-        else:
-            error_msg = f'Unable to fetch video. Error: {error_msg[:100]}'
-        
-        return jsonify({'success': False, 'error': error_msg}), 400
+        logger.error(f"yt-dlp fallback error: {e}")
+    
+    return jsonify({'success': False, 'error': 'Could not fetch video info. Please try a different URL or use the Local Video Downloader.'}), 400
 
 @app.route('/download', methods=['POST'])
 def download_video():
@@ -229,12 +276,7 @@ def download_video():
             'cookiefile': cookie_file if cookie_file else None,
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-            },
-            'source_address': '0.0.0.0',
-            'socket_timeout': 30,
-            'retries': 5,
+            }
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -248,7 +290,7 @@ def download_video():
                 mimetype='video/mp4'
             )
         else:
-            return jsonify({'success': False, 'error': 'Download failed - file not created'}), 500
+            return jsonify({'success': False, 'error': 'Download failed'}), 500
             
     except Exception as e:
         error_msg = str(e)
