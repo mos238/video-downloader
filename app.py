@@ -1,11 +1,12 @@
 from flask import Flask, render_template, request, jsonify, session, send_file
 from flask_cors import CORS
-import yt_dlp
 import os
 import uuid
 import re
 import json
+import subprocess
 import logging
+from werkzeug.utils import secure_filename
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -50,7 +51,6 @@ def upload_cookie():
         if file.filename == '':
             return jsonify({'success': False, 'error': 'No file selected'}), 400
         
-        from werkzeug.utils import secure_filename
         filename = secure_filename(f"cookies_{uuid.uuid4().hex[:8]}.txt")
         filepath = os.path.join(COOKIE_FOLDER, filename)
         file.save(filepath)
@@ -109,47 +109,64 @@ def get_video_info():
     logger.info(f"Fetching info for: {url}")
     
     cookie_file = get_cookie_path()
-    logger.info(f"Cookie file: {cookie_file}")
     
     try:
-        # Simple, minimal configuration
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'ignoreerrors': True,
-            'extract_flat': False,
-            'nocheckcertificate': True,
-            'cookiefile': cookie_file if cookie_file else None,
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        }
+        cmd = [
+            'yt-dlp',
+            '--no-warnings',
+            '--quiet',
+            '--dump-json',
+            '--no-check-certificate',
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        ]
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            
-            if not info:
-                return jsonify({'success': False, 'error': 'Could not fetch video info'}), 400
-            
-            formats = []
-            for f in info.get('formats', []):
-                if f.get('height') and f.get('ext') in ['mp4', 'webm']:
+        if cookie_file and os.path.exists(cookie_file):
+            cmd.extend(['--cookies', cookie_file])
+        
+        cmd.append(url)
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        
+        if result.returncode != 0:
+            logger.error(f"yt-dlp error: {result.stderr}")
+            return jsonify({'success': False, 'error': 'Failed to fetch video info'}), 400
+        
+        info = json.loads(result.stdout)
+        
+        formats = []
+        for f in info.get('formats', []):
+            if f.get('height') and f.get('ext') in ['mp4', 'webm', 'm4a']:
+                # Skip formats with only audio
+                if f.get('vcodec') == 'none' and f.get('acodec') != 'none':
+                    # Keep as separate audio option
+                    formats.append({
+                        'quality': f"audio",
+                        'format_id': f['format_id'],
+                        'ext': f['ext'],
+                        'filesize': f.get('filesize', 0)
+                    })
+                elif f.get('vcodec') != 'none':
                     formats.append({
                         'quality': f"{f['height']}p",
                         'format_id': f['format_id'],
                         'ext': f['ext'],
                         'filesize': f.get('filesize', 0)
                     })
-            
-            formats.sort(key=lambda x: int(x['quality'].replace('p', '')), reverse=True)
-            
-            return jsonify({
-                'success': True,
-                'title': info.get('title', 'Unknown'),
-                'thumbnail': info.get('thumbnail', ''),
-                'uploader': info.get('uploader', 'Unknown'),
-                'duration': info.get('duration', 0),
-                'formats': formats[:10]
-            })
-            
+        
+        # Sort formats by height (highest first)
+        formats.sort(key=lambda x: int(x['quality'].replace('p', '')) if x['quality'] != 'audio' else 0, reverse=True)
+        
+        return jsonify({
+            'success': True,
+            'title': info.get('title', 'Unknown'),
+            'thumbnail': info.get('thumbnail', ''),
+            'uploader': info.get('uploader', 'Unknown'),
+            'duration': info.get('duration', 0),
+            'formats': formats[:15]  # Return top 15 formats
+        })
+        
+    except subprocess.TimeoutExpired:
+        return jsonify({'success': False, 'error': 'Request timed out'}), 400
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Error: {error_msg}")
@@ -173,19 +190,26 @@ def download_video():
     filepath = os.path.join(DOWNLOAD_FOLDER, filename)
     
     try:
-        ydl_opts = {
-            'format': format_id,
-            'outtmpl': filepath,
-            'quiet': True,
-            'no_warnings': True,
-            'ignoreerrors': True,
-            'nocheckcertificate': True,
-            'cookiefile': cookie_file if cookie_file else None,
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        }
+        cmd = [
+            'yt-dlp',
+            '--no-warnings',
+            '--quiet',
+            '--no-check-certificate',
+            '--format', format_id,
+            '--output', filepath,
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        ]
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+        if cookie_file and os.path.exists(cookie_file):
+            cmd.extend(['--cookies', cookie_file])
+        
+        cmd.append(url)
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        
+        if result.returncode != 0:
+            logger.error(f"Download error: {result.stderr}")
+            return jsonify({'success': False, 'error': 'Download failed'}), 500
         
         if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
             return send_file(
@@ -195,8 +219,10 @@ def download_video():
                 mimetype='video/mp4'
             )
         else:
-            return jsonify({'success': False, 'error': 'Download failed'}), 500
+            return jsonify({'success': False, 'error': 'Download failed - file not created'}), 500
             
+    except subprocess.TimeoutExpired:
+        return jsonify({'success': False, 'error': 'Download timed out'}), 500
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Download error: {error_msg}")
